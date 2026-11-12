@@ -1,0 +1,19 @@
+{
+  "name": "claude-mods",
+  "description": "Personal Claude Code mods, forked from upstream with local fixes.",
+  "owner": { "name": "g-avalos" },
+  "plugins": [
+    {
+      "name": "token-weather",
+      "description": "Context window forecast above the prompt, with a prompt-cache countdown, cold-since time and cache hit/miss stats. Fork of hamzafer/claude-code-mods.",
+      "version": "0.2.2",
+      "source": "./mods/token-weather"
+    },
+    {
+      "name": "filetree",
+      "description": "IDE-style file tree pane for Claude Code. Fork of data-goblin/claude-code-filetree.",
+      "version": "0.8.2",
+      "source": "./mods/filetree"
+    }
+  ]
+}
