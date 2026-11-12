@@ -1,4 +1,15 @@
 export type CacheTtl = '5m' | '1h'
+export type CacheStats = {
+  lastTs: string
+  lastRead: number
+  lastWrite: number
+  lastInput: number
+  read: number
+  write: number
+  input: number
+  hits: number
+  misses: number
+}
 export type TokenWeatherReading = { tokens: number; window: number; percent: number }
 
 declare module 'claude-code' {
@@ -11,6 +22,8 @@ declare module 'claude-code' {
       detectedTtl: CacheTtl | null
       // Whether the cache-clock mod's status line is set up; its countdown replaces this one.
       cacheClockOn: boolean
+      // Cache hits/misses and token counts from the transcript's usage.
+      cacheStats: CacheStats
     }
   }
 }

@@ -3,7 +3,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CacheTtl, TokenWeatherReading } from '../types'
+import type { CacheStats, CacheTtl, TokenWeatherReading } from '../types'
 import { bandsFile, parseOrder, stackBands } from './bands'
 
 const HISTORY = 12
@@ -35,6 +35,12 @@ const lastRequestAt = atom({ plugin: 'token-weather', key: 'lastRequestAt' } as 
 const detectedTtl = atom({ plugin: 'token-weather', key: 'detectedTtl' } as const, null as CacheTtl | null)
 // Whether the cache-clock mod draws the cache on the status line, from Claude Code's own figures.
 const cacheClockOn = atom({ plugin: 'token-weather', key: 'cacheClockOn' } as const, false)
+
+// Cache hits and misses read from each main-thread response's usage in the transcript.
+const EMPTY_STATS: CacheStats = { lastTs: '', lastRead: 0, lastWrite: 0, lastInput: 0, read: 0, write: 0, input: 0, hits: 0, misses: 0 }
+const cacheStats = atom({ plugin: 'token-weather', key: 'cacheStats' } as const, EMPTY_STATS)
+// WSL usually runs on UTC; show local wall-clock times in this zone unless TZ says otherwise.
+const FALLBACK_TZ = 'America/Argentina/Buenos_Aires'
 
 let bandOrder: Promise<string[]> | undefined // read once per session: restart to apply
 
@@ -72,6 +78,7 @@ export const register: Register = (on, options) => {
     if (e.reason === 'clear' || e.reason === 'resume') {
       stop()
       await update($, lastRequestAt, () => null)
+      await update($, cacheStats, () => EMPTY_STATS)
     }
     return next(e)
   })
@@ -93,9 +100,11 @@ export const register: Register = (on, options) => {
     if (!e.agentId) {
       await takeReading($) // main-loop turns only, not subagents
       await checkCacheClock($) // set up or removed mid-session
+      const tail = await readTail($)
+      await collectStats($, tail)
       if (override === null) {
         // The last response's usage in the transcript says which lifetime it wrote to the cache with.
-        const found = ttlFromTranscript(await readTail($))
+        const found = ttlFromTranscript(tail)
         if (found !== null) await detect($, found)
       }
     }
@@ -121,13 +130,16 @@ export const register: Register = (on, options) => {
     if (since !== null && !(await read($, cacheClockOn))) {
       const clockNow = await $.clock.now()
       if (armedFor !== since) restart($, since, clockNow, ttlMs) // its timer was lost (a reload): pick it up
-      cache = cachePart(since + ttlMs - clockNow)
+      cache = cachePart(since + ttlMs - clockNow, since + ttlMs, await zone($))
     }
+    const stats = statsPart(await read($, cacheStats))
     const lineWidth =
       2 + // paddingX
       `${f.icon} ${f.word} ${now.percent}% of context ${short(now.tokens)} / ${short(now.window)}`.length +
       (isWide ? `  last turns ${sparkline(history)}${history.length > 1 ? trend(history) : ''}`.length : 0)
     const showCache = isWide && cache !== null && lineWidth + cache.text.length <= e.props.bodyColumns
+    const showStats =
+      showCache && stats !== null && lineWidth + cache!.text.length + stats.text.length <= e.props.bodyColumns
 
     const mine = (
       <Box flexDirection="row" paddingX={1}>
@@ -138,6 +150,8 @@ export const register: Register = (on, options) => {
         {isWide && <Text color={f.color}>{sparkline(history)}</Text>}
         {isWide && history.length > 1 && <Text dimColor>{trend(history)}</Text>}
         {showCache && cache && <Text color={cache.color} dimColor={cache.isCold}>{cache.text}</Text>}
+        {showStats && stats && <Text color={stats.color}>{stats.hit}</Text>}
+        {showStats && stats && <Text dimColor>{stats.rest}</Text>}
       </Box>
     )
     bandOrder ??= readBandOrder($).catch(() => [])
@@ -252,10 +266,85 @@ async function takeReading($: EngineInterface) {
   await update($, readings, history => [...history, { tokens, window: context.window, percent }].slice(-HISTORY))
 }
 
+async function zone($: EngineInterface) {
+  const tz = await $.env.get('TZ').catch(() => undefined)
+  return tz && tz !== 'UTC' && tz !== 'Etc/UTC' ? tz : FALLBACK_TZ
+}
+
+function hhmm(ms: number, timeZone: string) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone }).format(ms)
+  } catch {
+    const d = new Date(ms)
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+}
+
+function ago(ms: number) {
+  const m = Math.floor(ms / 60_000)
+  return m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')} ago`
+}
+
+// Adds every main-thread response newer than the last one counted. One response can be
+// split over several transcript entries sharing a message id and usage: counted once.
+async function collectStats($: EngineInterface, text: string) {
+  const prev = await read($, cacheStats)
+  const seen = new Set<string>()
+  const fresh: { read: number; write: number; input: number }[] = []
+  let lastTs = prev.lastTs
+  for (const line of text.split('\n')) {
+    let entry: any
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (entry?.type !== 'assistant' || entry.isSidechain || !entry.message?.usage) continue
+    const ts = String(entry.timestamp ?? '')
+    if (!ts || ts <= prev.lastTs) continue
+    const id = String(entry.message.id ?? ts)
+    if (seen.has(id)) continue
+    seen.add(id)
+    const u = entry.message.usage
+    fresh.push({
+      read: Number(u.cache_read_input_tokens) || 0,
+      write: Number(u.cache_creation_input_tokens) || 0,
+      input: Number(u.input_tokens) || 0,
+    })
+    if (ts > lastTs) lastTs = ts
+  }
+  if (fresh.length === 0) return
+  const last = fresh.at(-1)!
+  await update($, cacheStats, s => ({
+    lastTs,
+    lastRead: last.read,
+    lastWrite: last.write,
+    lastInput: last.input,
+    read: s.read + fresh.reduce((n, f) => n + f.read, 0),
+    write: s.write + fresh.reduce((n, f) => n + f.write, 0),
+    input: s.input + fresh.reduce((n, f) => n + f.input, 0),
+    hits: s.hits + fresh.filter(f => f.read > 0).length,
+    misses: s.misses + fresh.filter(f => f.read === 0).length,
+  }))
+}
+
+// Last request: hit or miss and its hit rate; session: hits/misses and the input tokens
+// cache reads saved (a read costs a tenth of fresh input).
+function statsPart(s: CacheStats) {
+  if (s.hits + s.misses === 0) return null
+  const total = s.lastRead + s.lastWrite + s.lastInput
+  const pct = total > 0 ? Math.round((s.lastRead / total) * 100) : 0
+  const hit = s.lastRead > 0 ? `  ✓ hit ${pct}%` : '  ✗ miss'
+  const saved = Math.round(s.read * 0.9)
+  const rest = ` · ${s.hits}✓ ${s.misses}✗ · saved ~${short(saved)} tok`
+  return { hit, rest, text: hit + rest, color: s.lastRead > 0 ? 'green' : 'red' }
+}
+
 // What the cache part says with `leftMs` until the cache expires.
-function cachePart(leftMs: number) {
+function cachePart(leftMs: number, expiredAt?: number, timeZone = FALLBACK_TZ) {
   if (leftMs <= 0) {
-    return { text: '  ❄ cache cold', color: 'red', isCold: true }
+    const when = expiredAt ? ` since ${hhmm(expiredAt, timeZone)} (${ago(-leftMs)})` : ''
+    return { text: `  ❄ cache cold${when}`, color: 'red', isCold: true }
   }
   const seconds = Math.ceil(leftMs / 1000)
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
