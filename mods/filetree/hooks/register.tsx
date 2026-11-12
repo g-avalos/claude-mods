@@ -3230,6 +3230,7 @@ export const register: Register = (on, options) => {
   splitAt = options?.split === 'top' ? 'top' : 'bottom'
   jumpMovesClaude = options?.jump !== 'tree'
   on('session.start', async ($, e, next) => {
+    noDock = options?.start === 'off'
     outside = []
     workTouches = []
     workLast = 0

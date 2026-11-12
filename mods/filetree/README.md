@@ -1,3 +1,5 @@
+> Fork of [data-goblin/claude-code-filetree](https://github.com/data-goblin/claude-code-filetree) 0.8.2 kept in [g-avalos/claude-mods](https://github.com/g-avalos/claude-mods). Images and docs linked below live upstream.
+
 <h1 align="center">Claude Code Filetree</h1>
 
 <p align="center">
