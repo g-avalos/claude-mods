@@ -5,8 +5,8 @@
   "plugins": [
     {
       "name": "token-weather",
-      "description": "Context window forecast above the prompt, with a prompt-cache countdown, cold-since time and cache hit/miss stats. Fork of hamzafer/claude-code-mods.",
-      "version": "0.2.3",
+      "description": "Context window forecast above the prompt, with a prompt-cache countdown, cold-since time, cache hit/miss stats and a cost row (session and turn cost, turn time, t/s, thinking tokens). Fork of hamzafer/claude-code-mods.",
+      "version": "0.3.0",
       "source": "./mods/token-weather"
     },
     {

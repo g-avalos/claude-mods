@@ -44,7 +44,7 @@ describe('token-weather cache countdown', () => {
   test('is hidden before the first request', async ($, on) => {
     await start($, on)
     const ui = await $.ui.mount({ surface: 'terminal', ...BAND } as any)
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /cache/ })).toBeUndefined()
     await ui.unmount()
   })
@@ -163,18 +163,18 @@ describe('token-weather cache countdown', () => {
   test('drops the cache part first on a narrow line', async ($, on) => {
     await start($, on)
     await request($, 0)
-    // 60 columns: room for the forecast and its sparkline, not for the cache part too.
+    // 60 columns: the shorter Context label leaves room for the cache part (54 columns).
     const narrow = { ...BAND, props: { ...BAND.props, bodyColumns: 60 } }
     const ui = await $.ui.mount({ surface: 'terminal', ...narrow } as any)
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /last turns/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /cache/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: '  ❄ cache 5:00' })).toBeDefined()
     await ui.unmount()
 
     // Below 60 columns the sparkline goes, and the cache part with it.
     const tiny = { ...BAND, props: { ...BAND.props, bodyColumns: 59 } }
     const small = await $.ui.mount({ surface: 'terminal', ...tiny } as any)
-    expect(await small.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await small.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
     expect(await small.find({ type: 'Text', text: /cache/ })).toBeUndefined()
     await small.unmount()
 
@@ -188,7 +188,7 @@ describe('token-weather cache countdown', () => {
     await start($, on)
     await request($, 0)
     const ui = await $.ui.mount({ surface: 'terminal', ...BAND } as any)
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /cache/ })).toBeUndefined()
     await ui.unmount()
   })

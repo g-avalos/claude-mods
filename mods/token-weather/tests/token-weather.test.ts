@@ -24,18 +24,18 @@ describe('token-weather', () => {
     }
 
     const ui = await $.ui.mount({ plugin: 'token-weather', surface: 'terminal', ...BAND } as any)
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
 
     tokens = 134_400
     await $.turn.complete({ reason: 'answer', answer: 'ok', durationMs: 1 } as any)
-    expect(await ui.find({ type: 'Text', text: /Showers/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /67% of context/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☂ Context/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^ 67%$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /▲ \+98\.3k last turn/ })).toBeDefined()
     await ui.unmount()
 
     // The same readings draw on the desktop surface too.
     const desk = await $.ui.mount({ plugin: 'token-weather', surface: 'desktop', ...BAND } as any)
-    expect(await desk.find({ type: 'Text', text: /Showers/ })).toBeDefined()
+    expect(await desk.find({ type: 'Text', text: /☂ Context/ })).toBeDefined()
     expect(await desk.find({ type: 'Text', text: /engine band/ })).toBeDefined() // stacked, not replaced
     await desk.unmount()
   })
@@ -57,7 +57,7 @@ describe('token-weather', () => {
       component: 'AbovePrompt',
       props: { hasSurvey: true, isWorking: false, maxRows: 10, bodyColumns: 120 },
     } as any)
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /engine band/ })).toBeDefined()
     await ui.unmount()
   })
@@ -90,7 +90,7 @@ describe('token-weather', () => {
     expect(root.props.key).toBe('bands')
     // with no order it would sit above where-am-i; the order file puts it last
     expect(root.children.map((c: any) => c.props.key)).toEqual(['band:where-am-i', 'band:token-weather'])
-    expect(await ui.find({ type: 'Text', text: /Clear/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /☀ Context/ })).toBeDefined()
     await ui.unmount()
     resetBandOrder()
   })

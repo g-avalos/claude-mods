@@ -3,7 +3,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import type { CacheStats, CacheTtl, TokenWeatherReading } from '../types'
+import type { CacheStats, CacheTtl, TokenWeatherReading, TurnStats } from '../types'
 import { bandsFile, parseOrder, stackBands } from './bands'
 
 const HISTORY = 12
@@ -37,8 +37,14 @@ const detectedTtl = atom({ plugin: 'token-weather', key: 'detectedTtl' } as cons
 const cacheClockOn = atom({ plugin: 'token-weather', key: 'cacheClockOn' } as const, false)
 
 // Cache hits and misses read from each main-thread response's usage in the transcript.
-const EMPTY_STATS: CacheStats = { lastTs: '', lastRead: 0, lastWrite: 0, lastInput: 0, read: 0, write: 0, input: 0, hits: 0, misses: 0 }
+const EMPTY_STATS: CacheStats = { lastTs: '', lastRead: 0, lastWrite: 0, lastInput: 0, read: 0, write: 0, input: 0, hits: 0, misses: 0, thinking: 0 }
 const cacheStats = atom({ plugin: 'token-weather', key: 'cacheStats' } as const, EMPTY_STATS)
+// The cost row: session cost, the last turn's cost, length and output speed.
+const EMPTY_TURN: TurnStats = { totalUsd: null, turnUsd: null, durationMs: null, tps: null }
+const turnStats = atom({ plugin: 'token-weather', key: 'turnStats' } as const, EMPTY_TURN)
+// Output tokens and model-request time of the main-loop turn in progress; a reload starts them over.
+let stepTokens = 0
+let stepMs = 0
 // WSL usually runs on UTC; show local wall-clock times in this zone unless TZ says otherwise.
 const FALLBACK_TZ = 'America/Argentina/Buenos_Aires'
 
@@ -61,7 +67,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     const result = await next(e)
-    await takeReading($)
+    const usd = await takeReading($)
+    await update($, turnStats, s => ({ ...s, totalUsd: usd }))
     await checkCacheClock($)
     if ((await read($, detectedTtl)) === null) {
       const known = await $.store.get('detectedTtl').catch(() => undefined) // the last session's, until this one's first response says
@@ -79,6 +86,7 @@ export const register: Register = (on, options) => {
       stop()
       await update($, lastRequestAt, () => null)
       await update($, cacheStats, () => EMPTY_STATS)
+      await update($, turnStats, () => EMPTY_TURN)
     }
     return next(e)
   })
@@ -86,9 +94,12 @@ export const register: Register = (on, options) => {
   // One model request of a turn. The cache's clock restarts when each one on the
   // main thread finishes, tool-loop requests inside a turn included.
   on('turn.step', async function* ($, e, next) {
+    const startedAt = e.agentId ? 0 : await $.clock.now()
     const result = yield* next(e)
     if (!e.agentId && result.stopReason !== null) {
       const now = await $.clock.now()
+      stepMs += now - startedAt
+      stepTokens += Number(result.usage?.output_tokens) || 0
       await update($, lastRequestAt, () => now)
       restart($, now, now, await ttlMsFor($, override))
     }
@@ -98,7 +109,16 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (!e.agentId) {
-      await takeReading($) // main-loop turns only, not subagents
+      const usd = await takeReading($) // main-loop turns only, not subagents
+      const tps = stepMs > 0 && stepTokens > 0 ? Math.round(stepTokens / (stepMs / 1000)) : null
+      stepTokens = 0
+      stepMs = 0
+      await update($, turnStats, s => ({
+        totalUsd: usd,
+        turnUsd: usd !== null && s.totalUsd !== null ? Math.max(0, usd - s.totalUsd) : null,
+        durationMs: e.durationMs,
+        tps,
+      }))
       await checkCacheClock($) // set up or removed mid-session
       const tail = await readTail($)
       await collectStats($, tail)
@@ -132,19 +152,23 @@ export const register: Register = (on, options) => {
       if (armedFor !== since) restart($, since, clockNow, ttlMs) // its timer was lost (a reload): pick it up
       cache = cachePart(since + ttlMs - clockNow, since + ttlMs, await zone($))
     }
-    const stats = statsPart(await read($, cacheStats))
+    const cached = await read($, cacheStats)
+    const stats = statsPart(cached)
     const lineWidth =
       2 + // paddingX
-      `${f.icon} ${f.word} ${now.percent}% of context ${short(now.tokens)} / ${short(now.window)}`.length +
+      `${f.icon} Context ${now.percent}% ${short(now.tokens)} / ${short(now.window)}`.length +
       (isWide ? `  last turns ${sparkline(history)}${history.length > 1 ? trend(history) : ''}`.length : 0)
     const showCache = isWide && cache !== null && lineWidth + cache.text.length <= e.props.bodyColumns
     const showStats =
       showCache && stats !== null && lineWidth + cache!.text.length + stats.text.length <= e.props.bodyColumns
 
-    const mine = (
+    const turn = await read($, turnStats)
+    const costParts = costRow(turn, cached.thinking ?? 0)
+
+    const contextRow = (
       <Box flexDirection="row" paddingX={1}>
-        <Text color={f.color} bold>{`${f.icon} ${f.word}`}</Text>
-        <Text>{` ${now.percent}% of context`}</Text>
+        <Text color={f.color} bold>{`${f.icon} Context`}</Text>
+        <Text>{` ${now.percent}%`}</Text>
         <Text dimColor>{` ${short(now.tokens)} / ${short(now.window)}`}</Text>
         {isWide && <Text dimColor>{'  last turns '}</Text>}
         {isWide && <Text color={f.color}>{sparkline(history)}</Text>}
@@ -154,6 +178,19 @@ export const register: Register = (on, options) => {
         {showStats && stats && <Text dimColor>{stats.rest}</Text>}
       </Box>
     )
+    const mine =
+      costParts === null ? (
+        contextRow
+      ) : (
+        <Box flexDirection="column">
+          {contextRow}
+          <Box flexDirection="row" paddingX={1}>
+            <Text color="green" bold>{'$ Cost'}</Text>
+            <Text>{` ${costParts.total}`}</Text>
+            {costParts.rest !== '' && <Text dimColor>{costParts.rest}</Text>}
+          </Box>
+        </Box>
+      )
     bandOrder ??= readBandOrder($).catch(() => [])
     return stackBands(rest, 'token-weather', mine, 'above', await bandOrder) // above what other mods draw, unless the band order says otherwise
   })
@@ -258,12 +295,31 @@ function arm($: EngineInterface, since: number, now: number, ttlMs: number) {
   })
 }
 
-async function takeReading($: EngineInterface) {
-  const { context } = await $.session.usage()
-  if (!context?.window) return
+// Records a context reading; returns the session's cost so far, null without a cost ledger.
+async function takeReading($: EngineInterface): Promise<number | null> {
+  const { context, cost } = await $.session.usage()
+  const usd = typeof cost?.usd === 'number' ? cost.usd : null
+  if (!context?.window) return usd
   const tokens = context.tokens ?? 0
   const percent = context.percent ?? Math.round((tokens / context.window) * 100)
   await update($, readings, history => [...history, { tokens, window: context.window, percent }].slice(-HISTORY))
+  return usd
+}
+
+// The cost row: session total first, then the last turn's cost, length, output speed and
+// thinking tokens. null when there is nothing to show yet.
+function costRow(t: TurnStats, thinking: number) {
+  if (t.totalUsd === null && t.durationMs === null) return null
+  const parts: string[] = []
+  if (t.turnUsd !== null) parts.push(`turn ${usd(t.turnUsd)}`)
+  if (t.durationMs !== null) parts.push(`${(t.durationMs / 1000).toFixed(1)}s`)
+  if (t.tps !== null) parts.push(`${t.tps} t/s`)
+  if (t.durationMs !== null && thinking > 0) parts.push(`${short(thinking)} thinking`)
+  return { total: t.totalUsd === null ? '—' : usd(t.totalUsd), rest: parts.length ? ` · ${parts.join(' · ')}` : '' }
+}
+
+function usd(n: number) {
+  return `$${n.toFixed(2)}`
 }
 
 async function zone($: EngineInterface) {
@@ -290,7 +346,7 @@ function ago(ms: number) {
 async function collectStats($: EngineInterface, text: string) {
   const prev = await read($, cacheStats)
   const seen = new Set<string>()
-  const fresh: { read: number; write: number; input: number }[] = []
+  const fresh: { read: number; write: number; input: number; thinking: number }[] = []
   let lastTs = prev.lastTs
   for (const line of text.split('\n')) {
     let entry: any
@@ -310,10 +366,14 @@ async function collectStats($: EngineInterface, text: string) {
       read: Number(u.cache_read_input_tokens) || 0,
       write: Number(u.cache_creation_input_tokens) || 0,
       input: Number(u.input_tokens) || 0,
+      thinking: Number(u.output_tokens_details?.thinking_tokens) || 0,
     })
     if (ts > lastTs) lastTs = ts
   }
-  if (fresh.length === 0) return
+  if (fresh.length === 0) {
+    if (prev.thinking) await update($, cacheStats, s => ({ ...s, thinking: 0 })) // this turn added no response
+    return
+  }
   const last = fresh.at(-1)!
   await update($, cacheStats, s => ({
     lastTs,
@@ -325,6 +385,7 @@ async function collectStats($: EngineInterface, text: string) {
     input: s.input + fresh.reduce((n, f) => n + f.input, 0),
     hits: s.hits + fresh.filter(f => f.read > 0).length,
     misses: s.misses + fresh.filter(f => f.read === 0).length,
+    thinking: fresh.reduce((n, f) => n + f.thinking, 0),
   }))
 }
 

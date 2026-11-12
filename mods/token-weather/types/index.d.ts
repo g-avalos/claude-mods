@@ -9,6 +9,18 @@ export type CacheStats = {
   input: number
   hits: number
   misses: number
+  // Thinking tokens of the responses the last turn added; absent in values stored before 0.3.0.
+  thinking?: number
+}
+export type TurnStats = {
+  // The session's cost so far in US dollars; null where the host keeps no cost ledger.
+  totalUsd: number | null
+  // What the last turn added to it; null before the first turn or without a ledger.
+  turnUsd: number | null
+  // Wall-clock length of the last turn; null before the first.
+  durationMs: number | null
+  // Output tokens per second over the last turn's model requests; null when none counted.
+  tps: number | null
 }
 export type TokenWeatherReading = { tokens: number; window: number; percent: number }
 
@@ -24,6 +36,8 @@ declare module 'claude-code' {
       cacheClockOn: boolean
       // Cache hits/misses and token counts from the transcript's usage.
       cacheStats: CacheStats
+      // Session cost, last turn's cost, length and output speed.
+      turnStats: TurnStats
     }
   }
 }
